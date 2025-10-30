@@ -2,6 +2,7 @@ const { Command } = require('commander');
 const http = require('http');
 const fs = require('fs').promises;
 const path = require('path');
+const superagent = require('superagent');
 
 const program = new Command();
 
@@ -28,7 +29,6 @@ async function startServer() {
   const server = http.createServer(async (req, res) => {
     const urlPath = req.url;
     
-    // Перевірка шляху - має бути /число
     const match = urlPath.match(/^\/(\d+)$/);
     if (!match) {
       res.writeHead(400, { 'Content-Type': 'text/plain' });
@@ -42,19 +42,32 @@ async function startServer() {
     try {
       switch (req.method) {
         case 'GET':
-          // Читання з кешу
           try {
+            // Спроба читати з кешу
             const image = await fs.readFile(filePath);
             res.writeHead(200, { 'Content-Type': 'image/jpeg' });
             res.end(image);
-          } catch (error) {
-            res.writeHead(404, { 'Content-Type': 'text/plain' });
-            res.end('Картинку не знайдено в кеші');
+          } catch (cacheError) {
+            // Якщо немає в кеші - запит до http.cat
+            try {
+              const response = await superagent
+                .get(`https://http.cat/${statusCode}`)
+                .responseType('blob');
+              
+              // Зберігаємо в кеш
+              await fs.writeFile(filePath, response.body);
+              
+              // Відправляємо клієнту
+              res.writeHead(200, { 'Content-Type': 'image/jpeg' });
+              res.end(response.body);
+            } catch (httpError) {
+              res.writeHead(404, { 'Content-Type': 'text/plain' });
+              res.end('Картинку не знайдено в кеші та на http.cat');
+            }
           }
           break;
           
         case 'PUT':
-          // Запис у кеш
           const chunks = [];
           req.on('data', chunk => chunks.push(chunk));
           req.on('end', async () => {
@@ -66,7 +79,6 @@ async function startServer() {
           break;
           
         case 'DELETE':
-          // Видалення з кешу
           try {
             await fs.access(filePath);
             await fs.unlink(filePath);
