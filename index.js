@@ -1,54 +1,97 @@
-#!/usr/bin/env node
-
+const { Command } = require('commander');
 const http = require('http');
-const { program } = require('commander');
 const fs = require('fs').promises;
 const path = require('path');
 
-// Оголошуємо обов'язкові опції
+const program = new Command();
+
 program
-  .requiredOption('-h, --host <host>', 'server host')
-  .requiredOption('-p, --port <port>', 'server port', (v) => parseInt(v, 10))
-  .requiredOption('-c, --cache <cacheDir>', 'cache directory path');
+  .requiredOption('-h, --host <host>', 'адреса сервера')
+  .requiredOption('-p, --port <port>', 'порт сервера')
+  .requiredOption('-c, --cache <cache>', 'шлях до директорії кешу')
+  .parse(process.argv);
 
-program.parse(process.argv);
+const options = program.opts();
 
-const { host, port, cache: cacheDir } = program.opts();
-
-// Створюємо кеш-директорію, якщо її немає
-async function ensureCacheDir(dir) {
+async function ensureCacheDir() {
   try {
-    await fs.mkdir(dir, { recursive: true });
-    // можемо вивести підтвердження
-    console.log(`Cache directory ready: ${dir}`);
-  } catch (err) {
-    console.error('Не вдалося створити cache directory:', err);
-    process.exit(1);
+    await fs.access(options.cache);
+  } catch (error) {
+    await fs.mkdir(options.cache, { recursive: true });
+    console.log(`Створено директорію кешу: ${options.cache}`);
   }
 }
 
-// Простий HTTP сервер — поки що відповідає 404 для всього.
-// (У наступних частинах доповнимо логіку GET/PUT/DELETE)
 async function startServer() {
-  await ensureCacheDir(cacheDir);
-
-  const server = http.createServer((req, res) => {
-    // Наразі просто відповідаємо, щоб перевірити що server працює.
-    res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
-    res.end('Not implemented yet (Part 1 OK)');
+  await ensureCacheDir();
+  
+  const server = http.createServer(async (req, res) => {
+    const urlPath = req.url;
+    
+    // Перевірка шляху - має бути /число
+    const match = urlPath.match(/^\/(\d+)$/);
+    if (!match) {
+      res.writeHead(400, { 'Content-Type': 'text/plain' });
+      res.end('Невірний шлях. Використовуйте /{код}');
+      return;
+    }
+    
+    const statusCode = match[1];
+    const filePath = path.join(options.cache, `${statusCode}.jpg`);
+    
+    try {
+      switch (req.method) {
+        case 'GET':
+          // Читання з кешу
+          try {
+            const image = await fs.readFile(filePath);
+            res.writeHead(200, { 'Content-Type': 'image/jpeg' });
+            res.end(image);
+          } catch (error) {
+            res.writeHead(404, { 'Content-Type': 'text/plain' });
+            res.end('Картинку не знайдено в кеші');
+          }
+          break;
+          
+        case 'PUT':
+          // Запис у кеш
+          const chunks = [];
+          req.on('data', chunk => chunks.push(chunk));
+          req.on('end', async () => {
+            const imageData = Buffer.concat(chunks);
+            await fs.writeFile(filePath, imageData);
+            res.writeHead(201, { 'Content-Type': 'text/plain' });
+            res.end('Картинку збережено в кеш');
+          });
+          break;
+          
+        case 'DELETE':
+          // Видалення з кешу
+          try {
+            await fs.access(filePath);
+            await fs.unlink(filePath);
+            res.writeHead(200, { 'Content-Type': 'text/plain' });
+            res.end('Картинку видалено з кешу');
+          } catch (error) {
+            res.writeHead(404, { 'Content-Type': 'text/plain' });
+            res.end('Картинку не знайдено в кеші');
+          }
+          break;
+          
+        default:
+          res.writeHead(405, { 'Content-Type': 'text/plain' });
+          res.end('Метод не дозволений');
+      }
+    } catch (error) {
+      console.error('Помилка сервера:', error);
+      res.writeHead(500, { 'Content-Type': 'text/plain' });
+      res.end('Внутрішня помилка сервера');
+    }
   });
 
-  server.listen(port, host, () => {
-    console.log(`Server listening on ${host}:${port}`);
-  });
-
-  server.on('error', (err) => {
-    console.error('Server error:', err);
-    process.exit(1);
+  server.listen(options.port, options.host, () => {
+    console.log(`Проксі-сервер запущено на http://${options.host}:${options.port}`);
   });
 }
 
-startServer().catch(err => {
-  console.error('Fatal error on startup:', err);
-  process.exit(1);
-});
+startServer().catch(console.error);
